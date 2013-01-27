@@ -11,6 +11,7 @@ from subprocess import Popen, PIPE
 
 MAX_DESCRIPTION_LENGTH = 60
 
+
 class LintRunner(object):
     """ Base class provides common functionality to run
           python code checkers. """
@@ -24,8 +25,9 @@ class LintRunner(object):
     output_format = ("%(level)s %(tool)s/%(error_type)s%(error_number)s:"
                      "%(description)s at %(filename)s line %(line_number)s.")
 
-    def __init__(self, config):
+    def __init__(self, config, fname=None):
         self.config = config
+        self.fname = fname
         if self.config.VIRTUALENV:
             # This is the least we can get away with (hopefully).
             self.env = {
@@ -76,6 +78,7 @@ class LintRunner(object):
         cmdline = [self.command]
         cmdline.extend(self.run_flags)
         cmdline.append(filename)
+        # print cmdline
 
         env = dict(os.environ, **self.env)
         logging.debug(' '.join(cmdline))
@@ -176,7 +179,7 @@ class PycheckerRunner(LintRunner):
 
 
 class PyflakesRunner(LintRunner):
-    command = 'python'
+    command = '/home/sdague/bin/pyflakes'
 
     output_matcher = re.compile(
         r'(?P<filename>.+):'
@@ -192,14 +195,15 @@ class PyflakesRunner(LintRunner):
 
     @property
     def stream(self):
-        return 'stderr'
+        return 'stdout'
 
     @property
     def run_flags(self):
-        return ('-c',
-                ('import sys;'
-                 'from pyflakes.scripts import pyflakes;'
-                 'pyflakes.main(sys.argv[1:])'))
+        return ()
+        # return ('-c',
+        #         ('import sys;'
+        #          'from pyflakes.scripts import pyflakes;'
+        #          'pyflakes.main(sys.argv[1:])'))
 
 
 class Pep8Runner(LintRunner):
@@ -212,8 +216,11 @@ class Pep8Runner(LintRunner):
       spiders/structs.py:51:9: E301 expected 1 blank line, found 0 """
 
     command = 'pep8'
-    # sane_default_ignore_codes = set([
-    #     'RW29', 'W391',
+    sane_default_ignore_codes = set([
+            "E126", "N4", "E12", "E711", "E721", "E712"
+            ])
+     #       ])
+            #     'RW29', 'W391',
     #     'W291', 'WO232'])
 
     output_matcher = re.compile(
@@ -222,6 +229,45 @@ class Pep8Runner(LintRunner):
         r'[^:]+:'
         r' (?P<error_number>\w+) '
         r'(?P<description>.+)$')
+
+    def find_venv(self, fname):
+        path = None
+        if fname.startswith("/"):
+            path = fname
+        else:
+            m = re.search("\.\.\/tmp(.*)", fname)
+            if m:
+                path = m.group(1)
+
+        if not path:
+            return
+
+        while(path != '/'):
+            path = os.path.dirname(path)
+            venv = path + "/.venv"
+            hacking = path + "/tools/hacking.py"
+            if os.path.isdir(venv):
+                self.env["VIRTUAL_ENV"] = venv
+
+                if os.path.exists(hacking):
+                    self.command = hacking
+                return
+
+    def __init__(self, config, fname=None):
+        self.config = config
+
+        if self.config.VIRTUALENV:
+            # This is the least we can get away with (hopefully).
+            self.env = {
+                'VIRTUAL_ENV': self.config.VIRTUALENV,
+                'PATH': self.config.VIRTUALENV + '/bin:' + os.environ['PATH']}
+        else:
+            self.env = {}
+
+        if fname:
+            self.find_venv(fname)
+
+        self.env.update(self.config.ENV)
 
     @staticmethod
     def fixup_data(data):
@@ -234,7 +280,7 @@ class Pep8Runner(LintRunner):
 
     @property
     def run_flags(self):
-        return '--repeat', '--ignore=' + ','.join(self.config.IGNORE_CODES)
+        return '--repeat', '--ignore=' + ','.join(self.operative_ignore_codes)
 
 
 class TestRunner(LintRunner):
@@ -290,7 +336,7 @@ class DefaultConfig(object):
         self.TEST_RUNNER_FLAGS = []
         self.TEST_RUNNER_OUTPUT = 'stderr'
         self.ENV = {}
-        self.PYLINT = True
+        self.PYLINT = False
         self.PYCHECKER = False
         self.PEP8 = True
         self.PYFLAKES = True
@@ -346,6 +392,7 @@ def main():
         value = getattr(options, option)
         if value is not None:
             setattr(config, option.upper(), value)
+
     config.IGNORE_CODES = set(config.IGNORE_CODES)
 
     if config.TEST_RUNNER_COMMAND:
@@ -353,7 +400,7 @@ def main():
         tests.run(args[0])
 
     def run(runner_class):
-        runner = runner_class(config)
+        runner = runner_class(config, args[0])
         runner.run(args[0])
 
     if config.PYLINT:
